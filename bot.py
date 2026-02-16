@@ -14,8 +14,8 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-BOT_TOKEN = os.getenv("8511686163:AAGloAfL9DKx5U-XMUtTKud0SG9ur33yQO0")
-ADMIN_ID = int(os.getenv("8210445482", "0"))
+BOT_TOKEN = os.getenv("8441563953:AAHXWfxFhxf7mbxOBt7A_QxCbNOQcwvv49Y")
+ADMIN_ID = int(os.getenv("8345525909", "0"))
 
 API_URL = "https://insta-profile-info-api.vercel.app/api/instagram.php?username="
 
