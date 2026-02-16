@@ -14,8 +14,9 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-BOT_TOKEN = os.getenv("8441563953:AAHXWfxFhxf7mbxOBt7A_QxCbNOQcwvv49Y")
-ADMIN_ID = int(os.getenv("8345525909", "0"))
+# FIXED: Token ko directly string mein dala gaya hai
+BOT_TOKEN = "8441563953:AAH6SU2IEu0uV5gfGhsYN_fYscvRCXRxVfI"
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8345525909"))
 
 API_URL = "https://insta-profile-info-api.vercel.app/api/instagram.php?username="
 
@@ -39,7 +40,8 @@ def save_user(uid):
 
 def total_users():
     cur.execute("SELECT COUNT(*) FROM users")
-    return cur.fetchone()[0]
+    res = cur.fetchone()
+    return res[0] if res else 0
 
 # ================= FORCE JOIN =================
 async def is_joined(bot, user_id):
@@ -150,12 +152,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "check":
         if await is_joined(context.bot, q.from_user.id):
-            await q.message.edit_text("✅ Access granted", reply_markup=menu_kb())
+            await q.edit_message_text("✅ Access granted", reply_markup=menu_kb())
         else:
             await q.message.reply_text("❌ Join all channels", reply_markup=join_kb())
 
     elif q.data == "menu":
-        await q.message.edit_text("🏠 Main Menu", reply_markup=menu_kb())
+        await q.edit_message_text("🏠 Main Menu", reply_markup=menu_kb())
 
     elif q.data == "deep":
         context.user_data["wait"] = True
@@ -217,9 +219,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = " ".join(context.args)
     cur.execute("SELECT id FROM users")
+    users = cur.fetchall()
     sent = 0
 
-    for (uid,) in cur.fetchall():
+    for (uid,) in users:
         try:
             await context.bot.send_message(uid, msg)
             sent += 1
@@ -238,11 +241,16 @@ def main():
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_username))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL
-    )
+    # WEBHOOK Setup (Recommended for Hosting)
+    if WEBHOOK_URL:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=WEBHOOK_URL
+        )
+    else:
+        # Local testing ke liye polling
+        app.run_polling()
 
 if __name__ == "__main__":
     main()
