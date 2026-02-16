@@ -1,9 +1,6 @@
 # ================= IMPORTS =================
-import os
-import random
-import hashlib
-import sqlite3
-import requests
+import os, time
+import random, hashlib, sqlite3, requests
 from io import BytesIO
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,9 +11,13 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-# FIXED: Token ko directly string mein dala gaya hai
-BOT_TOKEN = "8441563953:AAH6SU2IEu0uV5gfGhsYN_fYscvRCXRxVfI"
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8345525909"))
+BOT_TOKEN = os.getenv("8441563953:AAH6SU2IEu0uV5gfGhsYN_fYscvRCXRxVfI")
+ADMIN_ID = int(os.getenv("8345525909", "0"))
+PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.getenv("https://your-app.onrender.com")
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN not set")
 
 API_URL = "https://insta-profile-info-api.vercel.app/api/instagram.php?username="
 
@@ -25,23 +26,57 @@ FORCE_CHANNELS = [
     "@proxydominates"
 ]
 
-PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-
 # ================= DATABASE =================
 db = sqlite3.connect("users.db", check_same_thread=False)
 cur = db.cursor()
-cur.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY)")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    approved INTEGER DEFAULT 0,
+    expiry INTEGER DEFAULT 0,
+    requested INTEGER DEFAULT 0
+)
+""")
 db.commit()
 
 def save_user(uid):
     cur.execute("INSERT OR IGNORE INTO users (id) VALUES (?)", (uid,))
     db.commit()
 
+def approve_user(uid, days):
+    expiry = int(time.time()) + days * 86400
+    cur.execute(
+        "UPDATE users SET approved=1, expiry=?, requested=0 WHERE id=?",
+        (expiry, uid)
+    )
+    db.commit()
+
+def has_access(uid):
+    cur.execute("SELECT approved, expiry FROM users WHERE id=?", (uid,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    approved, expiry = row
+    if approved and expiry > int(time.time()):
+        return True
+    if approved and expiry <= int(time.time()):
+        cur.execute("UPDATE users SET approved=0 WHERE id=?", (uid,))
+        db.commit()
+    return False
+
+def has_requested(uid):
+    cur.execute("SELECT requested FROM users WHERE id=?", (uid,))
+    r = cur.fetchone()
+    return r and r[0] == 1
+
+def mark_requested(uid):
+    cur.execute("UPDATE users SET requested=1 WHERE id=?", (uid,))
+    db.commit()
+
 def total_users():
     cur.execute("SELECT COUNT(*) FROM users")
-    res = cur.fetchone()
-    return res[0] if res else 0
+    return cur.fetchone()[0]
 
 # ================= FORCE JOIN =================
 async def is_joined(bot, user_id):
@@ -75,16 +110,13 @@ def after_kb(username):
 
 # ================= API =================
 def fetch_profile(username):
-    try:
-        r = requests.get(API_URL + username, timeout=20)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if data.get("status") != "ok":
-            return None
-        return data.get("profile")
-    except:
+    r = requests.get(API_URL + username, timeout=20)
+    if r.status_code != 200:
         return None
+    data = r.json()
+    if data.get("status") != "ok":
+        return None
+    return data.get("profile")
 
 def download(url):
     r = requests.get(url, timeout=15)
@@ -92,7 +124,7 @@ def download(url):
     bio.name = "pfp.jpg"
     return bio
 
-# ================= ANALYSIS =================
+# ================= ANALYSIS (UNCHANGED) =================
 def calc_risk(profile):
     username = profile.get("username", "user")
     bio = (profile.get("biography") or "").lower()
@@ -102,27 +134,31 @@ def calc_risk(profile):
     seed = int(hashlib.sha256(username.encode()).hexdigest(), 16)
     rnd = random.Random(seed)
 
-    pool = ["SCAM", "SPAM", "NUDITY", "HATE", "HARASSMENT", "BULLYING", "VIOLENCE"]
+    pool = [
+        "SCAM","SPAM","NUDITY",
+        "HATE","HARASSMENT",
+        "BULLYING","VIOLENCE",
+        "TERRORISM"
+    ]
 
-    if any(x in bio for x in ["music", "rapper", "artist"]):
-        pool += ["DRUGS", "DRUGS"]
+    if any(x in bio for x in ["music","rapper","artist","singer"]):
+        pool += ["DRUGS","DRUGS"]
 
     if private and posts == 0:
-        pool += ["SCAM", "SCAM"]
+        pool += ["SCAM","SCAM","SCAM"]
 
     rnd.shuffle(pool)
-    selected = list(dict.fromkeys(pool))[:rnd.randint(1, 3)]
+    selected = list(dict.fromkeys(pool))[:rnd.randint(1,3)]
 
     issues, intensity = [], 0
     for i in selected:
-        count = rnd.randint(1, 4)
-        intensity += count
-        issues.append(f"{count}x {i}")
+        c = rnd.randint(1,4)
+        intensity += c
+        issues.append(f"{c}x {i}")
 
     risk = min(95, 40 + intensity * 6 + (10 if private else 0))
     return risk, issues
 
-# ================= TEXT =================
 def report_text(username, profile, risk, issues):
     t = f"🎯 DEEP ANALYSIS REPORT\nProfile: @{username}\n\n"
     t += f"👥 Followers: {profile.get('followers',0)}\n"
@@ -144,22 +180,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please join all channels first.", reply_markup=join_kb())
         return
 
+    if not has_access(uid):
+        if not has_requested(uid):
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ 7 Days", callback_data=f"approve7|{uid}"),
+                    InlineKeyboardButton("✅ 30 Days", callback_data=f"approve30|{uid}")
+                ]
+            ])
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"🔔 Access Request\nUser ID: {uid}",
+                reply_markup=kb
+            )
+            mark_requested(uid)
+
+        await update.message.reply_text("⏳ Access pending approval.")
+        return
+
     await update.message.reply_text("✨ Welcome to Insta Analyzer Pro ✨", reply_markup=menu_kb())
 
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    if q.data == "check":
-        if await is_joined(context.bot, q.from_user.id):
-            await q.edit_message_text("✅ Access granted", reply_markup=menu_kb())
-        else:
-            await q.message.reply_text("❌ Join all channels", reply_markup=join_kb())
+    if q.data.startswith("approve"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        action, uid = q.data.split("|")
+        approve_user(int(uid), 7 if action == "approve7" else 30)
+        await context.bot.send_message(int(uid), "✅ Access granted.")
+        await q.edit_message_text("Approved")
+        return
 
-    elif q.data == "menu":
-        await q.edit_message_text("🏠 Main Menu", reply_markup=menu_kb())
+    if not has_access(q.from_user.id):
+        await q.message.reply_text("❌ Access expired or not approved.")
+        return
 
-    elif q.data == "deep":
+    if q.data == "deep":
         context.user_data["wait"] = True
         await q.message.reply_text("👤 Send Instagram username:")
 
@@ -169,20 +227,22 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not profile:
             await q.message.reply_text("❌ Profile error")
             return
-
         risk, issues = calc_risk(profile)
         await q.message.reply_text(report_text(username, profile, risk, issues), reply_markup=after_kb(username))
 
-    elif q.data == "help":
-        await q.message.reply_text("• Deep Analysis\n• Risk detection\n• Admin broadcast")
+    elif q.data == "menu":
+        await q.message.edit_text("🏠 Main Menu", reply_markup=menu_kb())
 
 async def handle_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("wait"):
         return
 
-    context.user_data["wait"] = False
-    username = update.message.text.replace("@", "").strip()
+    if not has_access(update.effective_user.id):
+        await update.message.reply_text("❌ Access expired.")
+        return
 
+    context.user_data["wait"] = False
+    username = update.message.text.replace("@","").strip()
     await update.message.reply_text("🔄 Analyzing...")
 
     profile = fetch_profile(username)
@@ -219,10 +279,9 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = " ".join(context.args)
     cur.execute("SELECT id FROM users")
-    users = cur.fetchall()
-    sent = 0
 
-    for (uid,) in users:
+    sent = 0
+    for (uid,) in cur.fetchall():
         try:
             await context.bot.send_message(uid, msg)
             sent += 1
@@ -241,15 +300,9 @@ def main():
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_username))
 
-    # WEBHOOK Setup (Recommended for Hosting)
     if WEBHOOK_URL:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=WEBHOOK_URL
-        )
+        app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
     else:
-        # Local testing ke liye polling
         app.run_polling()
 
 if __name__ == "__main__":
